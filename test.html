@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日勤務分配表處理</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- mammoth.js 用於將 .docx 轉換為 HTML -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.7.1/mammoth.browser.min.js"></script>
+    <!-- jszip.js 用於讀取 .docx (zip 檔案) 內的 XML 以分析欄位寬度 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', 'Microsoft JhengHei', sans-serif;
+        }
+        #spinner {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl bg-white rounded-2xl shadow-lg p-6 md:p-8 space-y-6">
+        <header class="text-center">
+            <h1 class="text-2xl md:text-3xl font-bold text-gray-900">日勤務分配表處理</h1>
+            <p class="text-gray-500 mt-2">將特定的 Word 文件轉換並清理為可用於網頁的 HTML 格式</p>
+        </header>
+
+        <main class="space-y-6">
+            <!-- 檔案選擇區域 -->
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+                <label for="file-upload" class="cursor-pointer">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <span class="mt-2 block text-sm font-medium text-gray-900">選擇一個 .docx 檔案</span>
+                    <p id="file-name" class="mt-1 text-xs text-gray-500">尚未選擇檔案</p>
+                </label>
+                <input id="file-upload" name="file-upload" type="file" class="sr-only" accept=".docx">
+            </div>
+
+            <!-- 控制按鈕 -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                <button id="convert-button" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-300 disabled:bg-gray-400 flex items-center justify-center space-x-2">
+                    <div id="spinner" class="h-5 w-5 rounded-full border-2 border-white border-t-transparent animate-spin hidden"></div>
+                    <span>開始轉換</span>
+                </button>
+                <a href="https://www.ilovepdf.com/zh-tw/pdf_to_word" target="_blank" rel="noopener noreferrer" class="w-full bg-green-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-400 transition-all text-center">
+                    線上 PDF 轉 Word
+                </a>
+            </div>
+            
+            <div class="flex items-center justify-center">
+                <input id="open-on-complete" type="checkbox" checked class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                <label for="open-on-complete" class="ml-2 block text-sm text-gray-900">完成後在新分頁中開啟</label>
+            </div>
+
+            <!-- 輸出結果/下載按鈕 -->
+            <div id="output-container" class="hidden text-center">
+                <a id="download-link" class="w-full sm:w-auto inline-block bg-purple-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 transition-all">
+                    下載已處理的 HTML 檔案
+                </a>
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+    // --- DOM 元素 ---
+    const fileUpload = document.getElementById('file-upload');
+    const fileNameDisplay = document.getElementById('file-name');
+    const convertButton = document.getElementById('convert-button');
+    const spinner = document.getElementById('spinner');
+    const outputContainer = document.getElementById('output-container');
+    const downloadLink = document.getElementById('download-link');
+    const openOnCompleteCheckbox = document.getElementById('open-on-complete');
+
+    let selectedFile = null;
+
+    // --- 事件監聽 ---
+    fileUpload.addEventListener('change', (event) => {
+        selectedFile = event.target.files[0];
+        if (selectedFile) {
+            fileNameDisplay.textContent = selectedFile.name;
+            outputContainer.classList.add('hidden');
+        } else {
+            fileNameDisplay.textContent = '尚未選擇檔案';
+        }
+    });
+
+    convertButton.addEventListener('click', async () => {
+        if (!selectedFile) {
+            alert('請先選擇一個 Word (.docx) 檔案。');
+            return;
+        }
+
+        // 鎖定 UI
+        convertButton.disabled = true;
+        spinner.classList.remove('hidden');
+        convertButton.querySelector('span').textContent = '轉換中...';
+        outputContainer.classList.add('hidden');
+        
+        try {
+            // --- 執行轉換流程 ---
+
+            // 1. 從 .docx 的 XML 提取原始欄位寬度
+            const tableWidths = await extractColumnWidths(selectedFile);
+
+            // 2. 使用 mammoth.js 將 .docx 轉換為 HTML
+            const arrayBuffer = await selectedFile.arrayBuffer();
+            const mammothResult = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer });
+            const rawHtml = mammothResult.value;
+
+            // 3. 解析 HTML 並清理表格
+            const cleanedSoup = cleanHtmlTables(rawHtml);
+
+            // 4. 將提取的寬度應用到 HTML 表格
+            const finalSoupWithWidths = applyColumnWidthsToHtml(cleanedSoup, tableWidths);
+
+            // 5. 建立完整的 HTML 檔案內容
+            const finalHtmlContent = createCompleteHtml(finalSoupWithWidths.innerHTML, selectedFile.name.replace(/\.docx$/, ''));
+
+            // 6. 產生下載連結並顯示
+            const blob = new Blob([finalHtmlContent], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            
+            downloadLink.href = url;
+            downloadLink.download = `${selectedFile.name.replace(/\.docx$/, '')}_modified.html`;
+            outputContainer.classList.remove('hidden');
+
+            if (openOnCompleteCheckbox.checked) {
+                window.open(url, '_blank');
+            }
+            
+        } catch (error) {
+            console.error('轉換失敗:', error);
+            alert(`轉換失敗: ${error.message}`);
+        } finally {
+            // 解鎖 UI
+            convertButton.disabled = false;
+            spinner.classList.add('hidden');
+            convertButton.querySelector('span').textContent = '開始轉換';
+        }
+    });
+
+    // --- 核心邏輯函式 (Python -> JS 轉換) ---
+    
+    /**
+     * 從 .docx 檔案中提取表格欄位寬度百分比
+     */
+    async function extractColumnWidths(file) {
+        try {
+            const zip = await JSZip.loadAsync(file);
+            const docXmlFile = zip.file("word/document.xml");
+            if (!docXmlFile) {
+                console.warn("在 .docx 檔案中找不到 word/document.xml。");
+                return [];
+            }
+            
+            const xmlText = await docXmlFile.async("string");
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+            
+            const all_tables_widths = [];
+            const tables = xmlDoc.getElementsByTagName("w:tbl");
+
+            if (tables.length === 0) {
+                return [];
+            }
+
+            for (let i = 0; i < tables.length; i++) {
+                const table = tables[i];
+                const grid = table.getElementsByTagName("w:tblGrid")[0];
+                let col_widths_twips = [];
+
+                if (grid) {
+                    const gridCols = grid.getElementsByTagName("w:gridCol");
+                    for (const col of gridCols) {
+                        const width = col.getAttribute("w:w");
+                        if (width) col_widths_twips.push(parseInt(width, 10));
+                    }
+                }
+                
+                if (col_widths_twips.length === 0) {
+                    all_tables_widths.push(null);
+                    continue;
+                }
+
+                const total_width = col_widths_twips.reduce((sum, w) => sum + w, 0);
+                if (total_width === 0) {
+                    all_tables_widths.push(null);
+                    continue;
+                }
+                
+                const col_percents = col_widths_twips.map(w => parseFloat(((w / total_width) * 100).toFixed(2)));
+                all_tables_widths.push(col_percents);
+            }
+            return all_tables_widths;
+        } catch (e) {
+            console.error(`讀取 Word 欄位寬度時發生嚴重錯誤: ${e.message}`);
+            return [];
+        }
+    }
+
+    /**
+     * 將提取的欄位寬度應用到 HTML 表格
+     */
+    function applyColumnWidthsToHtml(soup, all_tables_widths) {
+        if (!all_tables_widths || all_tables_widths.length === 0) {
+            return soup;
+        }
+
+        const tables = soup.querySelectorAll('table');
+        tables.forEach((table, i) => {
+            if (i === 1) { // 跳過第二個表格
+                return;
+            }
+
+            if (i >= all_tables_widths.length || !all_tables_widths[i]) {
+                return;
+            }
+
+            const col_percents = all_tables_widths[i];
+            const colgroup = document.createElement('colgroup');
+            col_percents.forEach(percent => {
+                const col = document.createElement('col');
+                col.style.width = `${percent}%`;
+                colgroup.appendChild(col);
+            });
+            
+            table.insertBefore(colgroup, table.firstChild);
+        });
+        return soup;
+    }
+
+    /**
+     * 清理 HTML 表格的主函式
+     */
+    function cleanHtmlTables(htmlContent) {
+        const soup = document.createElement('div');
+        soup.innerHTML = htmlContent;
+
+        // [通用清理] 移除全形括號
+        const walker = document.createTreeWalker(soup, NodeFilter.SHOW_TEXT, null, false);
+        let node;
+        while (node = walker.nextNode()) {
+            const originalText = node.nodeValue;
+            if (originalText.includes('︵') || originalText.includes('︶')) {
+                node.nodeValue = originalText.replace(/︵|︶/g, '');
+            }
+        }
+
+        const all_rows_in_doc = Array.from(soup.querySelectorAll('tr'));
+        
+        // [新增任務] 設定特定儲存格為直式文字
+        const target_cells_coords = [[5, 1], [37, 1], [47, 1], [47, 2], [47, 16], [73, 1], [75, 1]];
+        target_cells_coords.forEach(([row_num, col_num]) => {
+            const row_idx = row_num - 1, col_idx = col_num - 1;
+            if (row_idx < all_rows_in_doc.length) {
+                const cells = all_rows_in_doc[row_idx].querySelectorAll('td, th');
+                if (col_idx < cells.length) {
+                    cells[col_idx].classList.add('vertical-text');
+                }
+            }
+        });
+        
+        // [新增任務] 設定特定儲存格的對齊方式
+        const alignment_overrides = [[75, 2, 'align-left']];
+        alignment_overrides.forEach(([row_num, col_num, align_class]) => {
+             const row_idx = row_num - 1, col_idx = col_num - 1;
+             if (row_idx < all_rows_in_doc.length) {
+                const cells = all_rows_in_doc[row_idx].querySelectorAll('td, th');
+                if (col_idx < cells.length) {
+                    cells[col_idx].classList.add(align_class);
+                }
+            }
+        });
+        
+        // [新增任務] 修正 '執勤班注意事項' 的斷行
+        const target_cell_break = Array.from(soup.querySelectorAll('td, th')).find(c => c.textContent.trim() === "執勤班注意事項");
+        if (target_cell_break) {
+            target_cell_break.innerHTML = "執勤班<br>注意事項";
+        }
+        
+        // --- 任務 1/6: 分析主勤務表中的 '查證組' 區塊 ---
+        const verification_cell_rows = Array.from(soup.querySelectorAll('td, th')).find(tag => tag.textContent.includes('查證組') && tag.hasAttribute('rowspan'));
+        
+        if (verification_cell_rows) {
+            try {
+                const num_rows_to_delete = parseInt(verification_cell_rows.getAttribute('rowspan'), 10);
+                const start_row = verification_cell_rows.closest('tr');
+                if (!start_row) throw new Error("找不到 '查證組' 的父層表格列。");
+                
+                const rows_to_delete = [start_row];
+                let current_row = start_row;
+                for (let i = 0; i < num_rows_to_delete - 1; i++) {
+                    current_row = current_row.nextElementSibling;
+                    if (current_row && current_row.tagName === 'TR') rows_to_delete.push(current_row);
+                    else break;
+                }
+                
+                const all_rows = Array.from(soup.querySelectorAll('tr'));
+                const start_row_index = all_rows.indexOf(start_row);
+                
+                soup.querySelectorAll('[rowspan]').forEach(cell => {
+                    if (cell === verification_cell_rows) return;
+                    const parent_row_of_cell = cell.closest('tr');
+                    const parent_row_index = all_rows.indexOf(parent_row_of_cell);
+                    const current_span = parseInt(cell.getAttribute('rowspan'), 10);
+                    if (parent_row_index < start_row_index && (parent_row_index + current_span) > start_row_index) {
+                        const new_span = current_span - rows_to_delete.length;
+                        if (new_span > 1) cell.setAttribute('rowspan', new_span);
+                        else cell.removeAttribute('rowspan');
+                    }
+                });
+
+                rows_to_delete.forEach(row => row.remove());
+
+            } catch (e) {
+                console.error(`處理主勤務表時發生錯誤: ${e.message}。`);
+            }
+        }
+
+        // --- 任務 2-6: 分析 '勤務人員代碼對照表' ---
+        const roster_title_cell = Array.from(soup.querySelectorAll('td, th')).find(tag => tag.textContent.includes('勤務人員代碼對照表'));
+        if (roster_title_cell) {
+            const table = roster_title_cell.closest('table');
+            const createUniformEmptyCellContent = () => '<span style="display:inline-block;width:100%;height:1em;min-width:2em;">&nbsp;</span>';
+
+            // 任務 2/6: 清空 '查證組' 標頭
+            const verification_cell_in_roster = Array.from(table.querySelectorAll('td, th')).find(c => c.textContent.trim() === '查證組');
+            if (verification_cell_in_roster) {
+                 let cells_to_clear = [verification_cell_in_roster];
+                 let current_cell = verification_cell_in_roster;
+                 for (let i = 0; i < 4; i++) {
+                     current_cell = current_cell.nextElementSibling;
+                     if(current_cell) cells_to_clear.push(current_cell);
+                     else break;
+                 }
+                 cells_to_clear.forEach((cell) => {
+                     cell.innerHTML = createUniformEmptyCellContent();
+                 });
+            }
+
+            // 任務 3/6: 清空指定行列內容
+            const all_rows_in_table = table.querySelectorAll('tr');
+            for(let i = 38; i < 63; i++) {
+                if (i < all_rows_in_table.length) {
+                    const cells = all_rows_in_table[i].querySelectorAll('td, th');
+                    [8, 9, 10].forEach(col_idx => {
+                        if (col_idx < cells.length) cells[col_idx].innerHTML = createUniformEmptyCellContent();
+                    });
+                }
+            }
+
+            // 任務 4/6: 獨立壓縮欄位資料
+            const target_rows = Array.from(all_rows_in_table).slice(38, 63);
+            [
+                {name: "第一組", check_idx: 15, indices: [12, 13, 14, 15]},
+                {name: "第二組", check_idx: 19, indices: [16, 17, 18, 19]}
+            ].forEach(({name, check_idx, indices}) => {
+                let data_to_keep = [];
+                target_rows.forEach(row => {
+                    const cells = row.querySelectorAll('td, th');
+                    if (check_idx < cells.length && cells[check_idx].textContent.trim()) {
+                        data_to_keep.push(indices.map(i => cells[i] ? cells[i].innerHTML : ''));
+                    }
+                });
+                
+                target_rows.forEach(row => {
+                    const cells = row.querySelectorAll('td, th');
+                    indices.forEach(col_idx => {
+                        if (col_idx < cells.length) cells[col_idx].innerHTML = createUniformEmptyCellContent();
+                    });
+                });
+
+                data_to_keep.forEach((data_row, i) => {
+                    if (i < target_rows.length) {
+                        const target_cells = target_rows[i].querySelectorAll('td, th');
+                        indices.forEach((cell_idx, j) => {
+                            if (cell_idx < target_cells.length) {
+                                target_cells[cell_idx].innerHTML = data_row[j];
+                            }
+                        });
+                    }
+                });
+            });
+
+            // 任務 5/6: 重新編號
+            let max_val = 0;
+            const seventh_col_cells = target_rows.map(r => r.querySelectorAll('td, th')[4]).filter(Boolean);
+            seventh_col_cells.forEach(c => {
+                const num = parseInt(c.textContent.trim(), 10);
+                if (!isNaN(num) && num > max_val) max_val = num;
+            });
+            
+            if(max_val > 0) {
+                let next_id = max_val + 1;
+                [{col_idx: 12, content_indices: [13, 14]}, {col_idx: 16, content_indices: [17, 18]}].forEach(({col_idx, content_indices}) => {
+                    target_rows.forEach(row => {
+                        const cells = row.querySelectorAll('td, th');
+                        const hasContent = content_indices.some(idx => idx < cells.length && cells[idx].textContent.trim());
+                        if (hasContent && col_idx < cells.length) {
+                            cells[col_idx].innerHTML = next_id;
+                            next_id++;
+                        }
+                    });
+                });
+            }
+        }
+        
+        return soup;
+    }
+
+    /**
+     * 建立完整的 HTML 檔案，包含 CSS
+     */
+    function createCompleteHtml(bodyHtml, title) {
+        const cssStyles = `
+<style>
+    body { font-family: 'Microsoft JhengHei', 'Segoe UI', Arial, sans-serif; line-height: 1.2; margin: 2px auto; background-color: #fdfdfd; color: #333; max-width: 700px; padding: 2px; font-size: 9px; }
+    table { border-collapse: collapse; width: 100%; margin: 2px 0; font-size: 6px; background-color: #fff; box-shadow: none; line-height: 1; table-layout: fixed; border-spacing: 0; }
+    table, th, td { border: 0.5px solid #ddd; }
+    th, td { padding: 0.5px 2px; text-align: center; vertical-align: middle; word-wrap: break-word; min-height: 0.4em; line-height: 0.85; height: auto; margin: 0; overflow: hidden; white-space: normal; box-sizing: border-box; position: relative; min-width: 2em; }
+    td span[style*="display:inline-block"], th span[style*="display:inline-block"] { display: inline-block !important; width: 100% !important; height: 1em !important; min-width: 2em !important; text-align: center !important; }
+    td:empty::after, th:empty::after { content: "\\00a0"; display: inline-block; width: 100%; min-width: 2em; height: 1em; }
+    th { background-color: #f9f9f9; font-weight: bold; font-size: 6px; line-height: 0.85; padding: 0.5px 2px; overflow: hidden; white-space: normal; box-sizing: border-box; position: relative; min-width: 2em; }
+    table:nth-of-type(2) { font-size: 8px; }
+    table:nth-of-type(2) th { font-size: 8px; }
+    /* --- START: CUSTOM STYLES --- */
+    .vertical-text {
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        letter-spacing: 0.5px;
+        word-break: keep-all;
+        line-height: 2;
+    }
+    .align-left {
+        text-align: left !important;
+    }
+    /* --- END: CUSTOM STYLES --- */
+    @media print {
+        body { margin: 0; padding: 1px; box-shadow: none; font-size: 7px; line-height: 0.8; }
+        table { font-size: 8px; page-break-inside: avoid; margin: 1px 0; line-height: 0.7; table-layout: fixed; border-spacing: 0; }
+        th, td { padding: 0.3px 1px; line-height: 0.75; border: 0.3px solid #ddd; overflow: hidden; box-sizing: border-box; min-width: 1.5em; }
+        table:nth-of-type(2) { font-size: 10pt; }
+        table:nth-of-type(2) th, table:nth-of-type(2) td { padding: 1px 2px; }
+    }
+    @media (max-width: 768px) {
+        body { margin: 1px; padding: 0px; font-size: 7px; line-height: 0.7; }
+        table { font-size: 5px; margin: 1px 0; line-height: 0.5; table-layout: fixed; border-spacing: 0; }
+        table:nth-of-type(2) { font-size: 12px; }
+        th, td { padding: 0px 1px; line-height: 0.7; overflow: hidden; box-sizing: border-box; min-width: 1.8em; }
+    }
+</style>`;
+        return `<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${title} (已修改)</title>
+    ${cssStyles}
+</head>
+<body>
+${bodyHtml}
+</body>
+</html>`;
+    }
+
+    </script>
+</body>
+</html>
+
