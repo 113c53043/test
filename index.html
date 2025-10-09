@@ -3,11 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>日勤務分配表處理</title>
+    <title>日勤務分配表轉換工具 (網頁版)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- mammoth.js 用於將 .docx 轉換為 HTML -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.7.1/mammoth.browser.min.js"></script>
-    <!-- jszip.js 用於讀取 .docx (zip 檔案) 內的 XML 以分析欄位寬度 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         body {
@@ -20,18 +18,22 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        .log-container {
+            font-family: 'Menlo', 'Consolas', monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800 flex items-center justify-center min-h-screen p-4">
 
     <div class="w-full max-w-4xl bg-white rounded-2xl shadow-lg p-6 md:p-8 space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl md:text-3xl font-bold text-gray-900">日勤務分配表處理</h1>
+            <h1 class="text-2xl md:text-3xl font-bold text-gray-900">日勤務分配表轉換工具 (Word)</h1>
             <p class="text-gray-500 mt-2">將特定的 Word 文件轉換並清理為可用於網頁的 HTML 格式</p>
         </header>
 
         <main class="space-y-6">
-            <!-- 檔案選擇區域 -->
             <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
                 <label for="file-upload" class="cursor-pointer">
                     <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
@@ -43,15 +45,15 @@
                 <input id="file-upload" name="file-upload" type="file" class="sr-only" accept=".docx">
             </div>
 
-            <!-- 控制按鈕 -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+            <div>
                 <button id="convert-button" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-300 disabled:bg-gray-400 flex items-center justify-center space-x-2">
                     <div id="spinner" class="h-5 w-5 rounded-full border-2 border-white border-t-transparent animate-spin hidden"></div>
                     <span>開始轉換</span>
                 </button>
-                <a href="https://www.ilovepdf.com/zh-tw/pdf_to_word" target="_blank" rel="noopener noreferrer" class="w-full bg-green-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-400 transition-all text-center">
+
+                <!-- <a href="https://www.ilovepdf.com/zh-tw/pdf_to_word" target="_blank" rel="noopener noreferrer" class="w-full bg-green-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-400 transition-all text-center">
                     線上 PDF 轉 Word
-                </a>
+                </a> -->
             </div>
             
             <div class="flex items-center justify-center">
@@ -59,11 +61,17 @@
                 <label for="open-on-complete" class="ml-2 block text-sm text-gray-900">完成後在新分頁中開啟</label>
             </div>
 
-            <!-- 輸出結果/下載按鈕 -->
             <div id="output-container" class="hidden text-center">
                 <a id="download-link" class="w-full sm:w-auto inline-block bg-purple-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 transition-all">
                     下載已處理的 HTML 檔案
                 </a>
+            </div>
+            
+            <div class="space-y-2 hidden">
+                <h3 class="text-lg font-semibold text-gray-800">處理狀態</h3>
+                <div id="log-output" class="log-container w-full h-64 bg-gray-900 text-gray-200 text-xs rounded-lg p-4 overflow-y-auto">
+                    等待開始...
+                </div>
             </div>
 
         </main>
@@ -78,6 +86,7 @@
     const outputContainer = document.getElementById('output-container');
     const downloadLink = document.getElementById('download-link');
     const openOnCompleteCheckbox = document.getElementById('open-on-complete');
+    const logOutput = document.getElementById('log-output');
 
     let selectedFile = null;
 
@@ -86,6 +95,7 @@
         selectedFile = event.target.files[0];
         if (selectedFile) {
             fileNameDisplay.textContent = selectedFile.name;
+            logMessage(`已選擇檔案: ${selectedFile.name}\n`);
             outputContainer.classList.add('hidden');
         } else {
             fileNameDisplay.textContent = '尚未選擇檔案';
@@ -103,41 +113,50 @@
         spinner.classList.remove('hidden');
         convertButton.querySelector('span').textContent = '轉換中...';
         outputContainer.classList.add('hidden');
+        logOutput.textContent = ''; // 清空日誌
         
         try {
+            logMessage(`處理檔案: ${selectedFile.name}`);
+            logMessage(`文件路徑: ${selectedFile.webkitRelativePath || selectedFile.name}`);
+            logMessage("\n狀態: 轉換中...");
+
             // --- 執行轉換流程 ---
-
-            // 1. 從 .docx 的 XML 提取原始欄位寬度
-            const tableWidths = await extractColumnWidths(selectedFile);
-
-            // 2. 使用 mammoth.js 將 .docx 轉換為 HTML
+            const tableWidths = await extractColumnWidths(selectedFile, logMessage);
             const arrayBuffer = await selectedFile.arrayBuffer();
+            
+            logMessage("\n[轉換] 正在使用 mammoth.js 將 .docx 轉換為 HTML...");
             const mammothResult = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer });
             const rawHtml = mammothResult.value;
-
-            // 3. 解析 HTML 並清理表格
-            const cleanedSoup = cleanHtmlTables(rawHtml);
-
-            // 4. 將提取的寬度應用到 HTML 表格
-            const finalSoupWithWidths = applyColumnWidthsToHtml(cleanedSoup, tableWidths);
-
-            // 5. 建立完整的 HTML 檔案內容
+            logMessage("HTML 轉換完成。");
+            
+            const cleanedSoup = cleanHtmlTables(rawHtml, logMessage);
+            const finalSoupWithWidths = applyColumnWidthsToHtml(cleanedSoup, tableWidths, logMessage);
+            
+            logMessage("\n[封裝] 正在建立最終的 HTML 檔案...");
             const finalHtmlContent = createCompleteHtml(finalSoupWithWidths.innerHTML, selectedFile.name.replace(/\.docx$/, ''));
+            logMessage("HTML 檔案建立完成。");
 
-            // 6. 產生下載連結並顯示
+            // 產生下載連結並顯示
             const blob = new Blob([finalHtmlContent], { type: 'text/html' });
             const url = URL.createObjectURL(blob);
             
             downloadLink.href = url;
-            downloadLink.download = `${selectedFile.name.replace(/\.docx$/, '')}_modified.html`;
+            const downloadFilename = `${selectedFile.name.replace(/\.docx$/, '')}_modified.html`;
+            downloadLink.download = downloadFilename;
             outputContainer.classList.remove('hidden');
 
+            logMessage("\n狀態: 轉換完成！");
+            logMessage(`輸出文件: ${downloadFilename}`);
+
             if (openOnCompleteCheckbox.checked) {
+                logMessage("\n正在瀏覽器中開啟文件...");
                 window.open(url, '_blank');
+                logMessage("已在瀏覽器中開啟。");
             }
             
         } catch (error) {
             console.error('轉換失敗:', error);
+            logMessage(`\n轉換失敗: ${error.message}`);
             alert(`轉換失敗: ${error.message}`);
         } finally {
             // 解鎖 UI
@@ -147,17 +166,20 @@
         }
     });
 
-    // --- 核心邏輯函式 (Python -> JS 轉換) ---
+    // --- 核心邏輯函式 ---
     
-    /**
-     * 從 .docx 檔案中提取表格欄位寬度百分比
-     */
-    async function extractColumnWidths(file) {
+    function logMessage(message) {
+        logOutput.textContent += message + '\n';
+        logOutput.scrollTop = logOutput.scrollHeight;
+    }
+
+    async function extractColumnWidths(file, log_func) {
+        log_func("\n[寬度分析] 正在讀取原始 Word 文件的表格欄位寬度...");
         try {
             const zip = await JSZip.loadAsync(file);
             const docXmlFile = zip.file("word/document.xml");
             if (!docXmlFile) {
-                console.warn("在 .docx 檔案中找不到 word/document.xml。");
+                log_func("  - 警告: 在 .docx 檔案中找不到 word/document.xml，無法分析寬度。");
                 return [];
             }
             
@@ -169,6 +191,7 @@
             const tables = xmlDoc.getElementsByTagName("w:tbl");
 
             if (tables.length === 0) {
+                 log_func("  - 文件中未找到表格。");
                 return [];
             }
 
@@ -183,6 +206,8 @@
                         const width = col.getAttribute("w:w");
                         if (width) col_widths_twips.push(parseInt(width, 10));
                     }
+                } else {
+                     log_func(`  - 表格 #${i+1} 沒有網格定義(tblGrid)，將跳過寬度分析。`);
                 }
                 
                 if (col_widths_twips.length === 0) {
@@ -198,100 +223,209 @@
                 
                 const col_percents = col_widths_twips.map(w => parseFloat(((w / total_width) * 100).toFixed(2)));
                 all_tables_widths.push(col_percents);
+                log_func(`  - 表格 #${i + 1} 寬度百分比: ${col_percents}`);
             }
+            log_func("欄位寬度分析完成。");
             return all_tables_widths;
         } catch (e) {
-            console.error(`讀取 Word 欄位寬度時發生嚴重錯誤: ${e.message}`);
+            log_func(`讀取 Word 欄位寬度時發生嚴重錯誤: ${e.message}`);
+            log_func("   將無法應用原始欄位寬度。");
             return [];
         }
     }
 
-    /**
-     * 將提取的欄位寬度應用到 HTML 表格
-     */
-    function applyColumnWidthsToHtml(soup, all_tables_widths) {
+    function applyColumnWidthsToHtml(soup, all_tables_widths, log_func) {
+        log_func("\n[寬度應用] 正在將原始欄位寬度應用到 HTML 表格...");
         if (!all_tables_widths || all_tables_widths.length === 0) {
+            log_func("沒有可用的寬度資訊，跳過此步驟。");
             return soup;
         }
 
         const tables = soup.querySelectorAll('table');
         tables.forEach((table, i) => {
             if (i === 1) { // 跳過第二個表格
+                log_func(`  - 跳過為表格 #${i+1} 應用特定寬度，使其欄位自動等寬。`);
                 return;
             }
-
             if (i >= all_tables_widths.length || !all_tables_widths[i]) {
+                log_func(`  - 跳過表格 #${i + 1} (無對應的寬度資訊)。`);
                 return;
             }
 
             const col_percents = all_tables_widths[i];
+            log_func(`  - 正在為表格 #${i + 1} 應用 ${col_percents.length} 個欄位的寬度。`);
             const colgroup = document.createElement('colgroup');
             col_percents.forEach(percent => {
                 const col = document.createElement('col');
                 col.style.width = `${percent}%`;
                 colgroup.appendChild(col);
             });
-            
             table.insertBefore(colgroup, table.firstChild);
         });
+        log_func("欄位寬度應用完成。");
         return soup;
     }
 
-    /**
-     * 清理 HTML 表格的主函式
-     */
-    function cleanHtmlTables(htmlContent) {
+    function analyzeAllTables(soup, log_func) {
+        log_func("\n[完整表格分析] 正在分析文檔中的所有表格...");
+        log_func("=".repeat(80));
+        const tables = soup.querySelectorAll('table');
+        if (!tables.length) {
+            log_func("文檔中未找到任何表格");
+            return;
+        }
+
+        log_func(`總共找到 ${tables.length} 個表格，以下是完整內容:`);
+        tables.forEach((table, i) => {
+            log_func(`\n【表格 #${i + 1}】`);
+            log_func("=".repeat(50));
+            const rows = table.querySelectorAll('tr');
+            if (!rows.length) {
+                log_func("這是一個空表格");
+                return;
+            }
+            let max_cols = 0;
+            const colgroup = table.querySelector('colgroup');
+            if (colgroup) {
+                max_cols = colgroup.querySelectorAll('col').length;
+            } else {
+                rows.forEach(row => {
+                    const cells = row.querySelectorAll('td, th');
+                    if (cells.length > max_cols) max_cols = cells.length;
+                });
+            }
+            log_func(`尺寸: ${rows.length} 行 × ${max_cols} 列`);
+            
+            let will_be_processed = false;
+            let processing_type = "";
+            if (table.querySelector("td[rowspan], th[rowspan]")?.textContent.includes('查證組')) {
+                will_be_processed = true;
+                processing_type = "主勤務表 - 將刪除查證組相關行";
+            } else if (table.textContent.includes('勤務人員代碼對照表')) {
+                 will_be_processed = true;
+                processing_type = "勤務人員代碼對照表 - 將清空/獨立欄位遞補/重新編號";
+            }
+            if (will_be_processed) log_func(`處理狀態: 會被處理 (${processing_type})`);
+            else log_func(`處理狀態: 保持原狀 (不會被修改)`);
+        });
+        log_func("\n" + "=".repeat(80));
+        log_func("完整表格分析完成，開始進行清理作業...");
+    }
+
+    function cleanHtmlTables(htmlContent, log_func) {
         const soup = document.createElement('div');
         soup.innerHTML = htmlContent;
 
-        // [通用清理] 移除全形括號
+        log_func("\n[通用清理] 正在移除文件中的全形括號 '︵' 和 '︶'...");
         const walker = document.createTreeWalker(soup, NodeFilter.SHOW_TEXT, null, false);
         let node;
+        let cleaned_count = 0;
         while (node = walker.nextNode()) {
             const originalText = node.nodeValue;
             if (originalText.includes('︵') || originalText.includes('︶')) {
                 node.nodeValue = originalText.replace(/︵|︶/g, '');
+                cleaned_count++;
             }
         }
+        if (cleaned_count > 0) log_func(`通用清理完成，共處理了 ${cleaned_count} 處。`);
+        else log_func("未在文檔中找到需要清理的全形括號。");
 
         const all_rows_in_doc = Array.from(soup.querySelectorAll('tr'));
         
-        // [新增任務] 設定特定儲存格為直式文字
-        const target_cells_coords = [[5, 1], [37, 1], [47, 1], [47, 2], [47, 16], [73, 1], [75, 1]];
-        target_cells_coords.forEach(([row_num, col_num]) => {
-            const row_idx = row_num - 1, col_idx = col_num - 1;
-            if (row_idx < all_rows_in_doc.length) {
-                const cells = all_rows_in_doc[row_idx].querySelectorAll('td, th');
-                if (col_idx < cells.length) {
-                    cells[col_idx].classList.add('vertical-text');
-                }
+        log_func("\n[新增任務] 正在根據文字內容設定儲存格為直式文字...");
+        const vertical_text_targets = [
+            '接案組', 
+            '情資分析組', 
+            '勤務人員代碼對照表', 
+            '今日勤務運作概況', 
+            '勤務班注意事項',
+            '執勤班注意事項' // 為相容舊版文件，也檢查此名稱
+        ];
+        let applied_count = 0;
+        const all_cells_in_doc = soup.querySelectorAll('td, th');
+
+        all_cells_in_doc.forEach(cell => {
+            const cellText = cell.textContent.trim();
+            if (vertical_text_targets.includes(cellText)) {
+                cell.classList.add('vertical-text');
+                
+                const parent_row = cell.closest('tr');
+                const row_index_in_doc = all_rows_in_doc.indexOf(parent_row);
+                const col_index = Array.from(parent_row.querySelectorAll('td, th')).indexOf(cell);
+
+                log_func(`  - 已為儲存格 (文件第 ${row_index_in_doc + 1} 行, 第 ${col_index + 1} 欄) 套用直式樣式。內容: [${cellText}]`);
+                applied_count++;
             }
         });
+
+        if (applied_count > 0) {
+            log_func(`共 ${applied_count} 個儲存格已套用直式文字樣式。`);
+        } else {
+            log_func("未找到任何指定的文字來套用直式樣式。");
+        }
         
-        // [新增任務] 設定特定儲存格的對齊方式
-        const alignment_overrides = [[75, 2, 'align-left']];
-        alignment_overrides.forEach(([row_num, col_num, align_class]) => {
-             const row_idx = row_num - 1, col_idx = col_num - 1;
-             if (row_idx < all_rows_in_doc.length) {
-                const cells = all_rows_in_doc[row_idx].querySelectorAll('td, th');
-                if (col_idx < cells.length) {
-                    cells[col_idx].classList.add(align_class);
-                }
+        // --- START: 修改後的對齊邏輯 (尋找最長文字儲存格) ---
+        log_func("\n[新增任務] 正在根據內容長度尋找文字最多的儲存格以設定對齊方式...");
+        
+        let longestCell = null;
+        let maxLength = 0;
+
+        // 遍歷所有儲存格，找到文字最長的那一個
+        all_cells_in_doc.forEach(cell => {
+            const currentLength = cell.textContent.trim().length;
+            if (currentLength > maxLength) {
+                maxLength = currentLength;
+                longestCell = cell;
             }
         });
-        
-        // [新增任務] 修正 '執勤班注意事項' 的斷行
+
+        // 如果找到了最長的儲存格，就套用樣式
+        if (longestCell) {
+            longestCell.classList.add('align-left');
+            const parent_row = longestCell.closest('tr');
+            const row_index_in_doc = all_rows_in_doc.indexOf(parent_row);
+            const col_index = Array.from(parent_row.querySelectorAll('td, th')).indexOf(longestCell);
+            
+            log_func(`  - 找到文字最長的儲存格 (Row ${row_index_in_doc + 1}, Col ${col_index + 1})，長度: ${maxLength}。`);
+            log_func(`  - 內容: "${longestCell.textContent.trim().substring(0, 50)}..."`);
+            log_func("  - 已為其套用 'align-left' 對齊樣式。");
+        } else {
+            log_func("  - 未找到任何帶有文字的儲存格可供設定對齊。");
+        }
+        // --- END: 修改後的對齊邏輯 ---
+
+        log_func("\n[新增任務] 修正 '執勤班注意事項' 的斷行...");
         const target_cell_break = Array.from(soup.querySelectorAll('td, th')).find(c => c.textContent.trim() === "執勤班注意事項");
         if (target_cell_break) {
             target_cell_break.innerHTML = "執勤班<br>注意事項";
+            log_func("  - 成功修正 '執勤班注意事項' 的換行方式。");
+        } else {
+             log_func("  - 未找到 '執勤班注意事項' 的儲存格，跳過此修正。");
         }
         
-        // --- 任務 1/6: 分析主勤務表中的 '查證組' 區塊 ---
+        // --- ADDED: Fix garbled text ---
+        log_func("\n[新增任務] 修正 '今日勤務運作概況' 的文字順序...");
+        const garbled_text = "今運日作勤概務況";
+        const correct_text = "今日勤務運作概況";
+        const target_cell_fix_text = Array.from(soup.querySelectorAll('td, th')).find(c => c.textContent.trim() === garbled_text);
+
+        if (target_cell_fix_text) {
+            target_cell_fix_text.textContent = correct_text;
+            log_func(`  - 成功將 "[${garbled_text}]" 修正為 "[${correct_text}]"。`);
+        } else {
+            log_func(`  - 未找到文字為 "[${garbled_text}]" 的儲存格，跳過此修正。`);
+        }
+        // --- END OF ADDITION ---
+        
+        analyzeAllTables(soup, log_func);
+
+        log_func("\n[任務 1/6] 正在分析主勤務表中的 '查證組' 區塊...");
         const verification_cell_rows = Array.from(soup.querySelectorAll('td, th')).find(tag => tag.textContent.includes('查證組') && tag.hasAttribute('rowspan'));
         
         if (verification_cell_rows) {
             try {
                 const num_rows_to_delete = parseInt(verification_cell_rows.getAttribute('rowspan'), 10);
+                log_func(`發現 '查證組' 區塊，跨越 ${num_rows_to_delete} 行。準備移除...`);
                 const start_row = verification_cell_rows.closest('tr');
                 if (!start_row) throw new Error("找不到 '查證組' 的父層表格列。");
                 
@@ -313,27 +447,53 @@
                     const current_span = parseInt(cell.getAttribute('rowspan'), 10);
                     if (parent_row_index < start_row_index && (parent_row_index + current_span) > start_row_index) {
                         const new_span = current_span - rows_to_delete.length;
+                        log_func(`正在修正單元格 '${cell.textContent.trim().substring(0,20)}...' 的 rowspan: 從 ${current_span} -> ${new_span}`);
                         if (new_span > 1) cell.setAttribute('rowspan', new_span);
                         else cell.removeAttribute('rowspan');
                     }
                 });
-
                 rows_to_delete.forEach(row => row.remove());
-
+                log_func(`成功移除主勤務表中 ${rows_to_delete.length} 行 '查證組' 相關內容。`);
             } catch (e) {
-                console.error(`處理主勤務表時發生錯誤: ${e.message}。`);
+                log_func(`處理主勤務表時發生錯誤: ${e.message}。`);
             }
+        } else {
+            log_func("在主勤務表中未找到帶有 rowspan 的 '查證組' 區塊。跳過任務 1。");
         }
 
-        // --- 任務 2-6: 分析 '勤務人員代碼對照表' ---
+        log_func("\n[任務 2-6] 正在分析 '勤務人員代碼對照表'...");
         const roster_title_cell = Array.from(soup.querySelectorAll('td, th')).find(tag => tag.textContent.includes('勤務人員代碼對照表'));
         if (roster_title_cell) {
             const table = roster_title_cell.closest('table');
             const createUniformEmptyCellContent = () => '<span style="display:inline-block;width:100%;height:1em;min-width:2em;">&nbsp;</span>';
 
-            // 任務 2/6: 清空 '查證組' 標頭
+            const all_rows_in_table = Array.from(table.querySelectorAll('tr'));
+            const title_row = roster_title_cell.closest('tr');
+            const title_row_index = all_rows_in_table.indexOf(title_row);
+            const target_rows = title_row_index > -1 ? all_rows_in_table.slice(title_row_index, title_row_index + 26) : [];
+            log_func(`已定位 '勤務人員代碼對照表'，將處理從第 ${title_row_index+1} 行開始的 ${target_rows.length} 行資料。`);
+
+            // --- ADDED: Save Row 43 Content ---
+            let preserved_row_43_content = null;
+            const row_43_index_in_table = 42; 
+            const row_43_element = all_rows_in_table[row_43_index_in_table];
+            if (row_43_element) {
+                preserved_row_43_content = {};
+                const cells = row_43_element.querySelectorAll('td, th');
+                const indices_to_preserve = [8, 9, 16, 17, 18, 19]; // 0-based indices for cols 9, 10, 17-20
+                indices_to_preserve.forEach(idx => {
+                    if (idx < cells.length) {
+                        preserved_row_43_content[idx] = cells[idx].innerHTML;
+                    }
+                });
+                log_func(`  -> 已暫存第 43 行的特定儲存格內容以便後續還原。`);
+            }
+            // --- END OF ADDITION ---
+
+            log_func("\n[任務 2/6] 在 '勤務人員代碼對照表' 中尋找 '查證組' 標頭儲存格...");
             const verification_cell_in_roster = Array.from(table.querySelectorAll('td, th')).find(c => c.textContent.trim() === '查證組');
             if (verification_cell_in_roster) {
+                 log_func("找到 '查證組' 儲存格。準備清空其本身及右側四個相鄰欄位的文字...");
                  let cells_to_clear = [verification_cell_in_roster];
                  let current_cell = verification_cell_in_roster;
                  for (let i = 0; i < 4; i++) {
@@ -341,84 +501,261 @@
                      if(current_cell) cells_to_clear.push(current_cell);
                      else break;
                  }
-                 cells_to_clear.forEach((cell) => {
+                 cells_to_clear.forEach((cell, k) => {
+                     const original_content = cell.textContent.trim();
+                     const parent_row = cell.closest('tr');
+                     const row_index = all_rows_in_table.indexOf(parent_row);
+                     const col_index = Array.from(parent_row.querySelectorAll('td, th')).indexOf(cell);
                      cell.innerHTML = createUniformEmptyCellContent();
+                     log_func(`  - 已清空第 ${k+1} 個標頭儲存格 (Row ${row_index + 1}, Col ${col_index + 1})，原內容: '${original_content}'`);
                  });
+                 log_func(`成功清空了 ${cells_to_clear.length} 個目標標頭儲存格的文字內容。`);
+            } else {
+                log_func("在代碼對照表中未找到 '查證組' 儲存格。跳過任務 2。");
             }
 
-            // 任務 3/6: 清空指定行列內容
-            const all_rows_in_table = table.querySelectorAll('tr');
-            for(let i = 38; i < 63; i++) {
-                if (i < all_rows_in_table.length) {
-                    const cells = all_rows_in_table[i].querySelectorAll('td, th');
-                    [8, 9, 10].forEach(col_idx => {
-                        if (col_idx < cells.length) cells[col_idx].innerHTML = createUniformEmptyCellContent();
-                    });
-                }
-            }
-
-            // 任務 4/6: 獨立壓縮欄位資料
-            const target_rows = Array.from(all_rows_in_table).slice(38, 63);
-            [
-                {name: "第一組", check_idx: 15, indices: [12, 13, 14, 15]},
-                {name: "第二組", check_idx: 19, indices: [16, 17, 18, 19]}
-            ].forEach(({name, check_idx, indices}) => {
-                let data_to_keep = [];
+            log_func("\n[任務 3/6] 正在清空目標行的特定列(9, 10, 11)內容...");
+            if (target_rows.length > 0) {
+                const keywordsToKeep = ['值勤', '輪休', '補休', '公假', '事假', '病假', '慰休', '編號', '職稱', '姓名', '勤休'];
+                let cleared_cell_count = 0;
                 target_rows.forEach(row => {
                     const cells = row.querySelectorAll('td, th');
-                    if (check_idx < cells.length && cells[check_idx].textContent.trim()) {
-                        data_to_keep.push(indices.map(i => cells[i] ? cells[i].innerHTML : ''));
-                    }
-                });
-                
-                target_rows.forEach(row => {
-                    const cells = row.querySelectorAll('td, th');
-                    indices.forEach(col_idx => {
-                        if (col_idx < cells.length) cells[col_idx].innerHTML = createUniformEmptyCellContent();
-                    });
-                });
-
-                data_to_keep.forEach((data_row, i) => {
-                    if (i < target_rows.length) {
-                        const target_cells = target_rows[i].querySelectorAll('td, th');
-                        indices.forEach((cell_idx, j) => {
-                            if (cell_idx < target_cells.length) {
-                                target_cells[cell_idx].innerHTML = data_row[j];
+                    const absolute_row_index = all_rows_in_table.indexOf(row);
+                    [8, 9, 10].forEach(col_idx => { // Corresponds to columns 9, 10, 11
+                        if (col_idx < cells.length) {
+                            const cellToProcess = cells[col_idx];
+                            const original_content = cellToProcess.textContent.trim();
+                            
+                            if (keywordsToKeep.includes(original_content)) {
+                                log_func(`  - [跳過] 儲存格 (Row ${absolute_row_index + 1}, Col ${col_idx + 1}) 內容為 '${original_content}'，予以保留。`);
+                                return; 
                             }
+
+                            if(original_content) { 
+                                 log_func(`  - 正在清空儲存格 (Row ${absolute_row_index + 1}, Col ${col_idx + 1})，原內容: '${original_content}'`);
+                            }
+                            cellToProcess.innerHTML = createUniformEmptyCellContent();
+                            cleared_cell_count++;
+                        }
+                    });
+                });
+                log_func(`已處理 ${cleared_cell_count} 個 '查證組' 相關人員資料儲存格。`);
+            } else {
+                log_func("未找到目標行，跳過任務 3。");
+            }
+            
+            log_func("\n[任務 4/6] 正在合併壓縮欄位資料，讓有效資料向上遞補...");
+            
+            const group1 = { name: "第一組", check_idx: 15, indices: [12, 13, 14, 15] };
+            const group2 = { name: "第二組", check_idx: 19, indices: [16, 17, 18, 19] };
+            const group1_capacity = 22;
+            const keywordsToSkip = ['編號', '職稱', '姓名', '勤休']; // Keywords to exclude from processing
+
+            log_func(`  - 步驟 1: 掃描並收集所有有效資料...`);
+            let all_data_to_keep = [];
+            
+            log_func(`    - 正在收集 ${group1.name} 的資料...`);
+            target_rows.forEach((row) => {
+                const cells = row.querySelectorAll('td, th');
+                const absolute_row_index = all_rows_in_table.indexOf(row);
+                if (group1.check_idx < cells.length && cells[group1.check_idx].textContent.trim()) {
+                    const isKeywordRow = group1.indices.some(i => i < cells.length && keywordsToSkip.includes(cells[i].textContent.trim()));
+                    if (!isKeywordRow) {
+                        all_data_to_keep.push({
+                            source_group: group1.name,
+                            source_row: absolute_row_index + 1,
+                            content: group1.indices.map(i => cells[i] ? cells[i].innerHTML : '')
                         });
                     }
-                });
+                }
+            });
+            const group1_data_count = all_data_to_keep.length;
+            log_func(`      -> ${group1.name} 找到 ${group1_data_count} 筆資料。`);
+
+            log_func(`    - 正在收集 ${group2.name} 的資料...`);
+            target_rows.forEach((row) => {
+                const cells = row.querySelectorAll('td, th');
+                const absolute_row_index = all_rows_in_table.indexOf(row);
+                if (group2.check_idx < cells.length && cells[group2.check_idx].textContent.trim()) {
+                    const isKeywordRow = group2.indices.some(i => i < cells.length && keywordsToSkip.includes(cells[i].textContent.trim()));
+                    if (!isKeywordRow) {
+                        all_data_to_keep.push({
+                            source_group: group2.name,
+                            source_row: absolute_row_index + 1,
+                            content: group2.indices.map(i => cells[i] ? cells[i].innerHTML : '')
+                        });
+                    }
+                }
+            });
+            log_func(`      -> ${group2.name} 找到 ${all_data_to_keep.length - group1_data_count} 筆資料。總共 ${all_data_to_keep.length} 筆。`);
+
+            // 新的步驟 2 (增加了詳細日誌)
+            log_func(`  - 步驟 2: 清空 ${group1.name} 和 ${group2.name} 的所有欄位 (跳過標題行)...`);
+            target_rows.forEach(row => {
+                const cells = row.querySelectorAll('td, th');
+                const absolute_row_index = all_rows_in_table.indexOf(row); // 為了日誌，取得絕對行號
+                const all_indices_to_clear = [...group1.indices, ...group2.indices];
+                
+                let isKeywordRow = false;
+                let foundKeyword = "";
+                // 進行更詳細的檢查
+                for (const i of all_indices_to_clear) {
+                    if (i < cells.length && keywordsToSkip.includes(cells[i].textContent.trim())) {
+                        isKeywordRow = true;
+                        foundKeyword = cells[i].textContent.trim();
+                        break;
+                    }
+                }
+
+                // 根據檢查結果輸出日誌
+                if (!isKeywordRow) {
+                    log_func(`    -> [執行清除] 正在清空 Row ${absolute_row_index + 1}，因為它「不是」標題行。`);
+                    all_indices_to_clear.forEach(col_idx => {
+                        if (col_idx < cells.length) {
+                            cells[col_idx].innerHTML = createUniformEmptyCellContent();
+                        }
+                    });
+                } else {
+                    log_func(`    -> [跳過清除] 正在跳過 Row ${absolute_row_index + 1}，因為在欄位中找到關鍵字: '${foundKeyword}'。`);
+                }
             });
 
-            // 任務 5/6: 重新編號
+            log_func(`  - 步驟 3: 將 ${all_data_to_keep.length} 筆有效資料向上遞補...`);
+            all_data_to_keep.forEach((data_item, i) => {
+                let target_row;
+                let target_indices;
+                let target_group_name;
+                
+                if (i < group1_capacity) {
+                    if (i < target_rows.length) {
+                         target_row = target_rows[i];
+                         target_indices = group1.indices;
+                         target_group_name = group1.name;
+                    }
+                } else {
+                    const group2_row_index = i - group1_capacity;
+                    if (group2_row_index < target_rows.length) {
+                        target_row = target_rows[group2_row_index];
+                        target_indices = group2.indices;
+                        target_group_name = group2.name;
+                    }
+                }
+
+                if (target_row) {
+                    const target_cells = target_row.querySelectorAll('td, th');
+                    const target_absolute_row_index = all_rows_in_table.indexOf(target_row);
+                    
+                    target_indices.forEach((cell_idx, j) => {
+                        if (cell_idx < target_cells.length) {
+                            target_cells[cell_idx].innerHTML = data_item.content[j];
+                        }
+                    });
+                    log_func(`    - 將 Row ${data_item.source_row} (來源:${data_item.source_group}) 的資料移動至 Row ${target_absolute_row_index + 1} (目標:${target_group_name})。`);
+                } else {
+                    log_func(`    - 警告: 資料索引 ${i} 超出目標行範圍，無法放置來自 Row ${data_item.source_row} 的資料。`);
+                }
+            });
+            log_func("資料合併壓縮與遞補完成。");
+
+
+            log_func("\n[任務 5/6] 正在重新編號 '情資分析組'...");
             let max_val = 0;
-            const seventh_col_cells = target_rows.map(r => r.querySelectorAll('td, th')[4]).filter(Boolean);
-            seventh_col_cells.forEach(c => {
+            const fifth_col_cells = target_rows.map(r => r.querySelectorAll('td, th')[4]).filter(Boolean);
+            fifth_col_cells.forEach(c => {
                 const num = parseInt(c.textContent.trim(), 10);
                 if (!isNaN(num) && num > max_val) max_val = num;
             });
             
             if(max_val > 0) {
+                log_func(`在目標行第5列找到的最大編號是: ${max_val}`);
                 let next_id = max_val + 1;
-                [{col_idx: 12, content_indices: [13, 14]}, {col_idx: 16, content_indices: [17, 18]}].forEach(({col_idx, content_indices}) => {
-                    target_rows.forEach(row => {
-                        const cells = row.querySelectorAll('td, th');
-                        const hasContent = content_indices.some(idx => idx < cells.length && cells[idx].textContent.trim());
-                        if (hasContent && col_idx < cells.length) {
-                            cells[col_idx].innerHTML = next_id;
-                            next_id++;
-                        }
-                    });
+                
+                log_func(`  -> 正在根據整理後的資料重新編號...`);
+                let total_filled_count = 0;
+
+                const col13_limit = 22;
+                let col13_filled_count = 0;
+
+                target_rows.forEach(row => {
+                    if (col13_filled_count >= col13_limit) return;
+                    const cells = row.querySelectorAll('td, th');
+                    const hasContent = [13, 14].some(idx => idx < cells.length && cells[idx].textContent.trim());
+                    if (hasContent && 12 < cells.length) {
+                        const absolute_row_index = all_rows_in_table.indexOf(row);
+                        log_func(`  - 正在將編號 '${next_id}' 填入儲存格 (Row ${absolute_row_index + 1}, Col 13)`);
+                        cells[12].innerHTML = next_id;
+                        next_id++;
+                        total_filled_count++;
+                        col13_filled_count++;
+                    }
                 });
+
+                target_rows.forEach(row => {
+                    const cells = row.querySelectorAll('td, th');
+                    const hasContent = [17, 18].some(idx => idx < cells.length && cells[idx].textContent.trim());
+                    if (hasContent && 16 < cells.length) {
+                        const absolute_row_index = all_rows_in_table.indexOf(row);
+                         log_func(`  - 正在將編號 '${next_id}' 填入儲存格 (Row ${absolute_row_index + 1}, Col 17)`);
+                        cells[16].innerHTML = next_id;
+                        next_id++;
+                        total_filled_count++;
+                    }
+                });
+                log_func(`  -> 共填寫了 ${total_filled_count} 個新編號。`);
+                log_func("'情資分析組' 重新編號完成。");
+
+            } else {
+                 log_func("未能在目標行第5列找到任何有效數字，無法繼續重新編號。");
             }
+
+            // // --- ADDED: Restore Row 43 Content ---
+            // if (preserved_row_43_content && row_43_element) {
+            //     log_func(`\n[修正] 正在還原第 43 行的特定儲存格內容...`);
+            //     const cells_to_restore = row_43_element.querySelectorAll('td, th');
+            //     for (const idx_str in preserved_row_43_content) {
+            //         const idx = parseInt(idx_str, 10);
+            //         if (idx < cells_to_restore.length) {
+            //             cells_to_restore[idx].innerHTML = preserved_row_43_content[idx];
+            //             log_func(`  - 已還原儲存格 (Row 43, Col ${idx + 1}) 的內容。`);
+            //         }
+            //     }
+            // }
+            // // --- END OF ADDITION ---
+
+        } else {
+             log_func("未找到 '勤務人員代碼對照表'。跳過所有相關任務。");
         }
+        
+        log_func("\n" + "=".repeat(80));
+        log_func("[最終結果] 所有表格的最終儲存格內容總覽");
+        log_func("=".repeat(80));
+        
+        const finalTables = soup.querySelectorAll('table');
+        finalTables.forEach((table, tableIndex) => {
+            log_func(`\n--- 表格 #${tableIndex + 1} ---`);
+            const finalRows = table.querySelectorAll('tr');
+            if (finalRows.length === 0) {
+                log_func("  (此表格為空)");
+                return;
+            }
+            finalRows.forEach((row, rowIndex) => {
+                const finalCells = row.querySelectorAll('td, th');
+                if (finalCells.length === 0) {
+                     log_func(`  Row ${rowIndex + 1}: (此行為空)`);
+                } else {
+                    let rowContent = [];
+                    finalCells.forEach((cell, cellIndex) => {
+                        rowContent.push(`(Col ${cellIndex + 1}: [${cell.textContent.trim()}])`);
+                    });
+                    log_func(`  Row ${rowIndex + 1}: ${rowContent.join(' | ')}`);
+                }
+            });
+        });
+        log_func("\n[最終結果] 內容總覽結束。");
         
         return soup;
     }
 
-    /**
-     * 建立完整的 HTML 檔案，包含 CSS
-     */
     function createCompleteHtml(bodyHtml, title) {
         const cssStyles = `
 <style>
@@ -431,18 +768,8 @@
     th { background-color: #f9f9f9; font-weight: bold; font-size: 6px; line-height: 0.85; padding: 0.5px 2px; overflow: hidden; white-space: normal; box-sizing: border-box; position: relative; min-width: 2em; }
     table:nth-of-type(2) { font-size: 8px; }
     table:nth-of-type(2) th { font-size: 8px; }
-    /* --- START: CUSTOM STYLES --- */
-    .vertical-text {
-        writing-mode: vertical-rl;
-        text-orientation: mixed;
-        letter-spacing: 0.5px;
-        word-break: keep-all;
-        line-height: 2;
-    }
-    .align-left {
-        text-align: left !important;
-    }
-    /* --- END: CUSTOM STYLES --- */
+    .vertical-text { writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 0.5px; word-break: keep-all; line-height: 2; }
+    .align-left { text-align: left !important; }
     @media print {
         body { margin: 0; padding: 1px; box-shadow: none; font-size: 7px; line-height: 0.8; }
         table { font-size: 8px; page-break-inside: avoid; margin: 1px 0; line-height: 0.7; table-layout: fixed; border-spacing: 0; }
@@ -452,7 +779,7 @@
     }
     @media (max-width: 768px) {
         body { margin: 1px; padding: 0px; font-size: 7px; line-height: 0.7; }
-        table { font-size: 5px; margin: 1px 0; line-height: 0.5; table-layout: fixed; border-spacing: 0; }
+        table { font-size: 4.9px; margin: 1px 0; line-height: 0.5; table-layout: fixed; border-spacing: 0; }
         table:nth-of-type(2) { font-size: 12px; }
         th, td { padding: 0px 1px; line-height: 0.7; overflow: hidden; box-sizing: border-box; min-width: 1.8em; }
     }
@@ -474,4 +801,3 @@ ${bodyHtml}
     </script>
 </body>
 </html>
-
